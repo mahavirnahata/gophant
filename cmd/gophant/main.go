@@ -19,7 +19,7 @@ func main() {
 	}
 
 	cmd := os.Args[1]
-	if cmd == "serve" || cmd == "migrate" || cmd == "migrate:rollback" || cmd == "queue:work" || cmd == "queue:retry" || cmd == "migrate:fresh" || cmd == "migrate:status" || cmd == "cache:clear" || cmd == "route:list" {
+	if cmd == "serve" || cmd == "migrate" || cmd == "migrate:rollback" || cmd == "queue:work" || cmd == "queue:retry" || cmd == "migrate:fresh" || cmd == "migrate:status" || cmd == "cache:clear" || cmd == "route:list" || cmd == "db:seed" {
 		if err := runCommand(cmd); err != nil {
 			fatal(err)
 		}
@@ -85,6 +85,26 @@ func main() {
 		if err != nil {
 			fatal(err)
 		}
+	case "make:event":
+		if err := makeEvent(name); err != nil {
+			fatal(err)
+		}
+	case "make:listener":
+		if err := makeListener(name); err != nil {
+			fatal(err)
+		}
+	case "make:seeder":
+		if err := makeSeeder(name); err != nil {
+			fatal(err)
+		}
+	case "make:mail":
+		if err := makeMail(name); err != nil {
+			fatal(err)
+		}
+	case "make:middleware":
+		if err := makeMiddleware(name); err != nil {
+			fatal(err)
+		}
 	case "schedule:run":
 		err := cliScheduleRun()
 		if err != nil {
@@ -124,6 +144,12 @@ func usage() {
 	fmt.Println("gophant migrate:status")
 	fmt.Println("gophant cache:clear")
 	fmt.Println("gophant route:list")
+	fmt.Println("gophant db:seed")
+	fmt.Println("gophant make:event EventName")
+	fmt.Println("gophant make:listener ListenerName")
+	fmt.Println("gophant make:seeder UserSeeder")
+	fmt.Println("gophant make:mail WelcomeMail")
+	fmt.Println("gophant make:middleware AuthMiddleware")
 }
 
 func makeController(name string, resource bool) error {
@@ -520,6 +546,119 @@ func init() {
 }
 `
 	return os.WriteFile(path, []byte(content), 0o644)
+}
+
+func makeEvent(name string) error {
+	if name == "" {
+		return errors.New("name required")
+	}
+	filename := filepath.Join("app", "Events", toSnake(name)+".go")
+	return writeFile(filename, fmt.Sprintf(`package events
+
+// %s is fired when ...
+type %s struct {
+	// TODO: add fields
+}
+`, name, name))
+}
+
+func makeListener(name string) error {
+	if name == "" {
+		return errors.New("name required")
+	}
+	filename := filepath.Join("app", "Listeners", toSnake(name)+".go")
+	return writeFile(filename, fmt.Sprintf(`package listeners
+
+import "github.com/mahavirnahata/gophant/events"
+
+type %s struct{}
+
+func (l *%s) Handle(e any) {
+	// TODO: handle event
+}
+
+func init() {
+	// events.Listen(func(e events.SomeEvent) { (&%s{}).Handle(e) })
+	_ = events.Fire
+}
+`, name, name, name))
+}
+
+func makeSeeder(name string) error {
+	if name == "" {
+		return errors.New("name required")
+	}
+	if !strings.HasSuffix(name, "Seeder") {
+		name += "Seeder"
+	}
+	filename := filepath.Join("database", "seeders", toSnake(name)+".go")
+	return writeFile(filename, fmt.Sprintf(`package seeders
+
+import (
+	"database/sql"
+
+	"github.com/mahavirnahata/gophant/db/seed"
+)
+
+type %s struct{}
+
+func (s *%s) Run(db *sql.DB) error {
+	// TODO: insert seed data
+	return nil
+}
+
+func init() {
+	seed.Register(&%s{})
+}
+`, name, name, name))
+}
+
+func makeMail(name string) error {
+	if name == "" {
+		return errors.New("name required")
+	}
+	if !strings.HasSuffix(name, "Mail") {
+		name += "Mail"
+	}
+	filename := filepath.Join("app", "Mail", toSnake(name)+".go")
+	return writeFile(filename, fmt.Sprintf(`package appmail
+
+import "github.com/mahavirnahata/gophant/mail"
+
+type %s struct {
+	// TODO: add fields
+}
+
+func (m *%s) Send(mailer *mail.Mailer) error {
+	return mailer.
+		To("recipient@example.com").
+		Subject("Subject here").
+		HTML("<p>Hello</p>").
+		Send()
+}
+`, name, name))
+}
+
+func makeMiddleware(name string) error {
+	if name == "" {
+		return errors.New("name required")
+	}
+	filename := filepath.Join("app", "Http", "Middleware", toSnake(name)+".go")
+	return writeFile(filename, fmt.Sprintf(`package middleware
+
+import (
+	gomvchttp "github.com/mahavirnahata/gophant/http"
+)
+
+func %s() gomvchttp.Middleware {
+	return func(next gomvchttp.Handler) gomvchttp.Handler {
+		return func(c *gomvchttp.Context) {
+			// TODO: implement middleware logic
+			next(c)
+		}
+	}
+}
+`, name))
 }
 
 func cliScheduleRun() error {

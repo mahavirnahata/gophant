@@ -63,6 +63,12 @@ func runCommand(cmd string) error {
 		app := gophant.New()
 		cli.RouteList(app.Router)
 		return nil
+	case "db:seed":
+		db, err := openDB()
+		if err != nil {
+			return err
+		}
+		return cli.SeedRun(db)
 	default:
 		return errors.New("unknown command")
 	}

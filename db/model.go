@@ -264,6 +264,15 @@ func (m *Model) UpdateOrCreate(match map[string]any, data map[string]any) (map[s
 	return m.Find(id)
 }
 
+// Scope applies a named query scope (a function that modifies a Query).
+// Use it to encapsulate common query conditions:
+//
+//	activeUsers := func(q *db.Query) *db.Query { return q.Where("active", "=", 1) }
+//	rows, _ := model.Scope(activeUsers).Get()
+func (m *Model) Scope(scope func(*Query) *Query) *Query {
+	return scope(m.Query())
+}
+
 // Count returns the number of rows in the table.
 func (m *Model) Count() (int, error) {
 	return m.Query().Count()

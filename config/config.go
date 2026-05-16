@@ -46,6 +46,15 @@ type Config struct {
 	ServerReadTimeout  int
 	ServerWriteTimeout int
 	ServerIdleTimeout  int
+
+	// Mail
+	MailDriver      string // smtp, log, null (default: log)
+	MailHost        string
+	MailPort        int
+	MailUsername    string
+	MailPassword    string
+	MailFromAddress string
+	MailFromName    string
 }
 
 func Load() *Config {
@@ -76,6 +85,13 @@ func Load() *Config {
 		ServerReadTimeout:  getenvInt("SERVER_READ_TIMEOUT", 15),
 		ServerWriteTimeout: getenvInt("SERVER_WRITE_TIMEOUT", 15),
 		ServerIdleTimeout:  getenvInt("SERVER_IDLE_TIMEOUT", 60),
+		MailDriver:         getenv("MAIL_DRIVER", "log"),
+		MailHost:           getenv("MAIL_HOST", "localhost"),
+		MailPort:           getenvInt("MAIL_PORT", 587),
+		MailUsername:       getenv("MAIL_USERNAME", ""),
+		MailPassword:       getenv("MAIL_PASSWORD", ""),
+		MailFromAddress:    getenv("MAIL_FROM_ADDRESS", "hello@example.com"),
+		MailFromName:       getenv("MAIL_FROM_NAME", "Gophant"),
 	}
 
 	if cfg.AppKey == "" {

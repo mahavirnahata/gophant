@@ -3,6 +3,7 @@ package gophant
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -15,10 +16,13 @@ import (
 	"github.com/mahavirnahata/gophant/config"
 	"github.com/mahavirnahata/gophant/container"
 	"github.com/mahavirnahata/gophant/db"
+	"github.com/mahavirnahata/gophant/events"
 	gomvchttp "github.com/mahavirnahata/gophant/http"
+	"github.com/mahavirnahata/gophant/mail"
 	"github.com/mahavirnahata/gophant/middleware"
 	"github.com/mahavirnahata/gophant/security"
 	"github.com/mahavirnahata/gophant/session"
+	"github.com/mahavirnahata/gophant/storage"
 	"github.com/mahavirnahata/gophant/view"
 	"github.com/redis/go-redis/v9"
 )
@@ -34,6 +38,9 @@ type App struct {
 	Cache     *cache.Cache
 	DB        *db.DB
 	Container *container.Container
+	Mailer    *mail.Mailer
+	Events    *events.Bus
+	Storage   *storage.Storage
 }
 
 func New() *App {
@@ -67,6 +74,9 @@ func New() *App {
 		Gate:      auth.NewGate(),
 		Cache:     newCache(cfg),
 		Container: container.New(),
+		Mailer:    newMailer(cfg),
+		Events:    events.NewBus(),
+		Storage:   storage.New(storage.NewLocalDriver("storage/app", "/storage")),
 	}
 
 	// Auto-connect database when DB_DRIVER and DB_DSN are configured.
@@ -95,6 +105,9 @@ func New() *App {
 	app.Container.Set(app.Gate)
 	app.Container.Set(app.Cache)
 	app.Container.Set(app.Session)
+	app.Container.Set(app.Mailer)
+	app.Container.Set(app.Events)
+	app.Container.Set(app.Storage)
 
 	r.Use(func(next gomvchttp.Handler) gomvchttp.Handler {
 		return func(c *gomvchttp.Context) {
@@ -152,6 +165,27 @@ func (a *App) Run() {
 		log.Printf("forced shutdown: %v", err)
 	}
 	log.Println("server stopped")
+}
+
+func newMailer(cfg *config.Config) *mail.Mailer {
+	var driver mail.Driver
+	switch cfg.MailDriver {
+	case "smtp":
+		driver = mail.NewSMTPDriver(mail.SMTPConfig{
+			Host:     cfg.MailHost,
+			Port:     cfg.MailPort,
+			Username: cfg.MailUsername,
+			Password: cfg.MailPassword,
+			From:     fmt.Sprintf("%s <%s>", cfg.MailFromName, cfg.MailFromAddress),
+		})
+	case "null":
+		driver = mail.NewNullDriver()
+	default:
+		driver = mail.NewLogDriver()
+	}
+	m := mail.New(driver)
+	m.From = fmt.Sprintf("%s <%s>", cfg.MailFromName, cfg.MailFromAddress)
+	return m
 }
 
 func newCache(cfg *config.Config) *cache.Cache {

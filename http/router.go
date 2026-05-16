@@ -46,15 +46,16 @@ type RouteInfo struct {
 }
 
 type Router struct {
-	routes           []route
-	middleware       []Middleware
-	groupMiddleware  []Middleware // extra middleware applied to every route in this group
-	view             ViewRenderer
-	basePath         string
-	notFound         Handler
-	methodNotAllowed Handler
-	routeSet         map[string]bool
-	namedRoutes      map[string]string
+	routes            []route
+	middleware        []Middleware
+	groupMiddleware   []Middleware // extra middleware applied to every route in this group
+	middlewareGroups  map[string][]Middleware
+	view              ViewRenderer
+	basePath          string
+	notFound          Handler
+	methodNotAllowed  Handler
+	routeSet          map[string]bool
+	namedRoutes       map[string]string
 }
 
 func NewRouter(view ViewRenderer) *Router {
@@ -74,6 +75,30 @@ func NewRouter(view ViewRenderer) *Router {
 
 func (r *Router) Use(m Middleware) {
 	r.middleware = append(r.middleware, m)
+}
+
+// DefineMiddlewareGroup registers a named set of middleware.
+// Apply a group by name with UseGroup inside a Group() call or via WithGroup().
+//
+//	r.DefineMiddlewareGroup("api", middleware.CORS(cfg), middleware.RateLimit(60, time.Minute))
+//	r.Group("/api", routes, r.WithGroup("api")...)
+func (r *Router) DefineMiddlewareGroup(name string, middleware ...Middleware) {
+	if r.middlewareGroups == nil {
+		r.middlewareGroups = map[string][]Middleware{}
+	}
+	r.middlewareGroups[name] = middleware
+}
+
+// WithGroup returns the middleware registered under name (panics if undefined).
+func (r *Router) WithGroup(name string) []Middleware {
+	if r.middlewareGroups == nil {
+		panic("router: middleware group " + name + " is not defined")
+	}
+	mw, ok := r.middlewareGroups[name]
+	if !ok {
+		panic("router: middleware group " + name + " is not defined")
+	}
+	return mw
 }
 
 func (r *Router) NotFound(h Handler) {
