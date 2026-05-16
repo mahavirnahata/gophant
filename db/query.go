@@ -313,27 +313,37 @@ func (q *Query) Delete() (sql.Result, error) {
 }
 
 func (q *Query) buildSelect() (string, []any) {
-	cols := strings.Join(q.selectCols, ",")
-	joinSQL := q.buildJoins()
+	parts := []string{"SELECT", strings.Join(q.selectCols, ","), "FROM", q.table}
+	if j := q.buildJoins(); j != "" {
+		parts = append(parts, j)
+	}
 	whereSQL, args := q.buildWhere(1)
-	query := fmt.Sprintf("SELECT %s FROM %s %s %s", cols, q.table, joinSQL, whereSQL)
+	if whereSQL != "" {
+		parts = append(parts, whereSQL)
+	}
+	query := strings.Join(parts, " ")
 	if q.orderBy != "" {
 		query += " ORDER BY " + q.orderBy
 	}
 	if q.limit > 0 {
-		query += " LIMIT " + fmt.Sprintf("%d", q.limit)
+		query += fmt.Sprintf(" LIMIT %d", q.limit)
 	}
 	if q.offset > 0 {
-		query += " OFFSET " + fmt.Sprintf("%d", q.offset)
+		query += fmt.Sprintf(" OFFSET %d", q.offset)
 	}
-	return strings.TrimSpace(query), args
+	return query, args
 }
 
 func (q *Query) buildCount() (string, []any) {
-	joinSQL := q.buildJoins()
+	parts := []string{"SELECT COUNT(*) FROM", q.table}
+	if j := q.buildJoins(); j != "" {
+		parts = append(parts, j)
+	}
 	whereSQL, args := q.buildWhere(1)
-	query := fmt.Sprintf("SELECT COUNT(*) FROM %s %s %s", q.table, joinSQL, whereSQL)
-	return strings.TrimSpace(query), args
+	if whereSQL != "" {
+		parts = append(parts, whereSQL)
+	}
+	return strings.Join(parts, " "), args
 }
 
 func (q *Query) buildJoins() string {

@@ -48,6 +48,7 @@ type RouteInfo struct {
 type Router struct {
 	routes           []route
 	middleware       []Middleware
+	groupMiddleware  []Middleware // extra middleware applied to every route in this group
 	view             ViewRenderer
 	basePath         string
 	notFound         Handler
@@ -90,7 +91,6 @@ func (r *Router) add(method, pattern string, h Handler, m []Middleware) int {
 		r.routeSet = map[string]bool{}
 	}
 	if r.routeSet[key] {
-		// return index of existing route
 		for i, rt := range r.routes {
 			if rt.method == method && rt.pattern == pattern {
 				return i
@@ -100,7 +100,9 @@ func (r *Router) add(method, pattern string, h Handler, m []Middleware) int {
 	}
 	r.routeSet[key] = true
 	segments := splitPattern(pattern)
-	r.routes = append(r.routes, route{method: method, pattern: pattern, segments: segments, handler: h, middleware: m})
+	// Merge group-level middleware (prepended) with route-level middleware.
+	routeMiddleware := append(append([]Middleware{}, r.groupMiddleware...), m...)
+	r.routes = append(r.routes, route{method: method, pattern: pattern, segments: segments, handler: h, middleware: routeMiddleware})
 	return len(r.routes) - 1
 }
 
@@ -274,11 +276,12 @@ func applyAutoView(c *Context, v any) {
 }
 
 // Group creates a route group with a shared prefix and optional middleware.
-// Routes defined inside fn inherit the group's prefix and middleware.
+// Routes defined inside fn inherit the global middleware plus any group-level middleware.
 func (r *Router) Group(prefix string, fn func(*Router), middleware ...Middleware) {
 	child := &Router{
 		routes:           r.routes,
-		middleware:       append(append([]Middleware{}, r.middleware...), middleware...),
+		middleware:       r.middleware,
+		groupMiddleware:  append(append([]Middleware{}, r.groupMiddleware...), middleware...),
 		view:             r.view,
 		basePath:         r.withBase(prefix),
 		notFound:         r.notFound,
@@ -330,10 +333,11 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	ctx := NewContext(w, req, r.view)
 	if len(matched) > 0 {
-		r.methodNotAllowed(ctx)
+		// Apply global middleware so CORS/auth middleware still run (e.g. OPTIONS preflight).
+		r.applyMiddleware(r.methodNotAllowed, r.middleware...)(ctx)
 		return
 	}
-	r.notFound(ctx)
+	r.applyMiddleware(r.notFound, r.middleware...)(ctx)
 }
 
 func (r *Router) applyMiddleware(h Handler, m ...Middleware) Handler {
