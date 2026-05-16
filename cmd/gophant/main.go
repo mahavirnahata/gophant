@@ -19,7 +19,7 @@ func main() {
 	}
 
 	cmd := os.Args[1]
-	if cmd == "serve" || cmd == "migrate" || cmd == "migrate:rollback" || cmd == "queue:work" || cmd == "queue:retry" || cmd == "migrate:fresh" || cmd == "migrate:status" || cmd == "cache:clear" {
+	if cmd == "serve" || cmd == "migrate" || cmd == "migrate:rollback" || cmd == "queue:work" || cmd == "queue:retry" || cmd == "migrate:fresh" || cmd == "migrate:status" || cmd == "cache:clear" || cmd == "route:list" {
 		if err := runCommand(cmd); err != nil {
 			fatal(err)
 		}
@@ -123,6 +123,7 @@ func usage() {
 	fmt.Println("gophant migrate:fresh")
 	fmt.Println("gophant migrate:status")
 	fmt.Println("gophant cache:clear")
+	fmt.Println("gophant route:list")
 }
 
 func makeController(name string, resource bool) error {

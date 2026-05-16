@@ -87,6 +87,24 @@ func (q *Query) OrWhereIn(col string, vals []any) *Query {
 	return q
 }
 
+// WhereNull adds a WHERE col IS NULL clause.
+func (q *Query) WhereNull(col string) *Query {
+	q.wheres = append(q.wheres, condition{col: col, op: "IS NULL"})
+	return q
+}
+
+// WhereNotNull adds a WHERE col IS NOT NULL clause.
+func (q *Query) WhereNotNull(col string) *Query {
+	q.wheres = append(q.wheres, condition{col: col, op: "IS NOT NULL"})
+	return q
+}
+
+// WhereBetween adds a WHERE col BETWEEN min AND max clause.
+func (q *Query) WhereBetween(col string, min, max any) *Query {
+	q.wheres = append(q.wheres, condition{col: col, op: "BETWEEN", val: [2]any{min, max}})
+	return q
+}
+
 func (q *Query) Join(table, first, op, second string) *Query {
 	q.joins = append(q.joins, join{kind: "INNER", table: table, first: first, op: op, second: second})
 	return q
@@ -99,6 +117,26 @@ func (q *Query) LeftJoin(table, first, op, second string) *Query {
 
 func (q *Query) OrderBy(order string) *Query {
 	q.orderBy = order
+	return q
+}
+
+// Latest orders by col DESC (default: created_at). Equivalent to OrderBy("col DESC").
+func (q *Query) Latest(col ...string) *Query {
+	c := "created_at"
+	if len(col) > 0 && col[0] != "" {
+		c = col[0]
+	}
+	q.orderBy = c + " DESC"
+	return q
+}
+
+// Oldest orders by col ASC (default: created_at).
+func (q *Query) Oldest(col ...string) *Query {
+	c := "created_at"
+	if len(col) > 0 && col[0] != "" {
+		c = col[0]
+	}
+	q.orderBy = c + " ASC"
 	return q
 }
 
@@ -197,6 +235,46 @@ func (q *Query) Paginate(page, perPage int) (Page, error) {
 	return Page{Data: data, Page: page, PerPage: perPage, Total: count}, nil
 }
 
+// Pluck returns all values of a single column as a string slice.
+func (q *Query) Pluck(col string) ([]string, error) {
+	q.selectCols = []string{col}
+	rows, err := q.Get()
+	if err != nil {
+		return nil, err
+	}
+	result := make([]string, 0, len(rows))
+	for _, row := range rows {
+		result = append(result, fmt.Sprintf("%v", row[col]))
+	}
+	return result, nil
+}
+
+// Chunk processes rows in batches of size, calling fn for each batch.
+// Stops early if fn returns an error.
+func (q *Query) Chunk(size int, fn func([]map[string]any) error) error {
+	offset := 0
+	for {
+		batch := *q
+		batch.limit = size
+		batch.offset = offset
+		rows, err := batch.Get()
+		if err != nil {
+			return err
+		}
+		if len(rows) == 0 {
+			break
+		}
+		if err := fn(rows); err != nil {
+			return err
+		}
+		if len(rows) < size {
+			break
+		}
+		offset += size
+	}
+	return nil
+}
+
 func (q *Query) Insert(data map[string]any) (sql.Result, error) {
 	cols := make([]string, 0, len(data))
 	vals := make([]any, 0, len(data))
@@ -286,7 +364,10 @@ func (q *Query) buildWhere(startIdx int) (string, []any) {
 			}
 		}
 
-		if w.op == "IN" {
+		switch w.op {
+		case "IS NULL", "IS NOT NULL":
+			sb.WriteString(fmt.Sprintf("%s %s", w.col, w.op))
+		case "IN":
 			list, ok := w.val.([]any)
 			if !ok || len(list) == 0 {
 				sb.WriteString("1=0")
@@ -299,12 +380,19 @@ func (q *Query) buildWhere(startIdx int) (string, []any) {
 			}
 			sb.WriteString(fmt.Sprintf("%s IN (%s)", w.col, strings.Join(placeholders, ",")))
 			args = append(args, list...)
-			continue
+		case "BETWEEN":
+			pair, ok := w.val.([2]any)
+			if !ok {
+				continue
+			}
+			sb.WriteString(fmt.Sprintf("%s BETWEEN %s AND %s", w.col, q.db.Dialect.Placeholder(idx), q.db.Dialect.Placeholder(idx+1)))
+			args = append(args, pair[0], pair[1])
+			idx += 2
+		default:
+			sb.WriteString(fmt.Sprintf("%s %s %s", w.col, w.op, q.db.Dialect.Placeholder(idx)))
+			args = append(args, w.val)
+			idx++
 		}
-
-		sb.WriteString(fmt.Sprintf("%s %s %s", w.col, w.op, q.db.Dialect.Placeholder(idx)))
-		args = append(args, w.val)
-		idx++
 	}
 	return sb.String(), args
 }

@@ -110,6 +110,18 @@ func New() *App {
 	return app
 }
 
+// HealthCheck registers a liveness endpoint (default: GET /health) that returns
+// {"status":"ok"} with a 200. Pass a custom path to override.
+func (a *App) HealthCheck(path ...string) {
+	p := "/health"
+	if len(path) > 0 && path[0] != "" {
+		p = path[0]
+	}
+	a.Router.Get(p, func(c *gomvchttp.Context) {
+		c.JSON(200, map[string]string{"status": "ok"})
+	})
+}
+
 // Run starts the HTTP server and blocks until SIGINT or SIGTERM is received,
 // then drains in-flight requests with a 30-second timeout.
 func (a *App) Run() {

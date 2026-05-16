@@ -59,6 +59,10 @@ func runCommand(cmd string) error {
 		return retryDead()
 	case "cache:clear":
 		return cacheClear()
+	case "route:list":
+		app := gophant.New()
+		cli.RouteList(app.Router)
+		return nil
 	default:
 		return errors.New("unknown command")
 	}

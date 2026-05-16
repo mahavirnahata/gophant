@@ -10,10 +10,12 @@ import (
 //
 //	func UserModel() *db.Model { return db.NewModel(nil, "users") }
 type Model struct {
-	DB         *DB
-	Table      string
-	PrimaryKey string // defaults to "id"
-	Timestamps bool   // auto-set created_at / updated_at
+	DB           *DB
+	Table        string
+	PrimaryKey   string // defaults to "id"
+	Timestamps   bool   // auto-set created_at / updated_at
+	SoftDelete   bool   // when true, Destroy sets deleted_at instead of deleting
+	DeletedAtCol string // soft-delete column (default: "deleted_at")
 }
 
 func NewModel(db *DB, table string) *Model {
@@ -30,9 +32,46 @@ func (m *Model) conn() *DB {
 	panic(errors.New("db not configured: call db.SetDefaultDB or use NewModel(db, table)"))
 }
 
+func (m *Model) deletedAtCol() string {
+	if m.DeletedAtCol != "" {
+		return m.DeletedAtCol
+	}
+	return "deleted_at"
+}
+
 // Query returns a fresh query builder for this table.
+// If SoftDelete is true, rows where deleted_at IS NOT NULL are excluded automatically.
 func (m *Model) Query() *Query {
+	q := m.conn().Table(m.Table)
+	if m.SoftDelete {
+		q = q.WhereNull(m.deletedAtCol())
+	}
+	return q
+}
+
+// WithTrashed returns a query that includes soft-deleted rows.
+func (m *Model) WithTrashed() *Query {
 	return m.conn().Table(m.Table)
+}
+
+// OnlyTrashed returns a query scoped to soft-deleted rows only.
+func (m *Model) OnlyTrashed() *Query {
+	return m.conn().Table(m.Table).WhereNotNull(m.deletedAtCol())
+}
+
+// Restore un-deletes a soft-deleted row by primary key.
+func (m *Model) Restore(id any) error {
+	if !m.SoftDelete {
+		return nil
+	}
+	pk := m.PrimaryKey
+	if pk == "" {
+		pk = "id"
+	}
+	_, err := m.conn().Table(m.Table).Where(pk, "=", id).Update(map[string]any{
+		m.deletedAtCol(): nil,
+	})
+	return err
 }
 
 // ── Finders ──────────────────────────────────────────────────────────────────
@@ -149,12 +188,80 @@ func (m *Model) Delete(whereCol string, whereVal any) error {
 }
 
 // Destroy removes a row by primary key.
+// When SoftDelete is true, it sets deleted_at = now() instead of hard-deleting.
 func (m *Model) Destroy(id any) error {
 	pk := m.PrimaryKey
 	if pk == "" {
 		pk = "id"
 	}
+	if m.SoftDelete {
+		return m.Save(id, map[string]any{m.deletedAtCol(): time.Now()})
+	}
 	return m.Delete(pk, id)
+}
+
+// FirstOrCreate finds the first row matching match, or creates it with the
+// union of match and defaults. Returns the row, whether it was created, and any error.
+func (m *Model) FirstOrCreate(match map[string]any, defaults map[string]any) (map[string]any, bool, error) {
+	q := m.Query()
+	for col, val := range match {
+		q = q.Where(col, "=", val)
+	}
+	row, err := q.First()
+	if err == nil {
+		return row, false, nil
+	}
+
+	data := make(map[string]any, len(match)+len(defaults))
+	for k, v := range match {
+		data[k] = v
+	}
+	for k, v := range defaults {
+		data[k] = v
+	}
+	id, err := m.Create(data)
+	if err != nil {
+		return nil, false, err
+	}
+	pk := m.PrimaryKey
+	if pk == "" {
+		pk = "id"
+	}
+	created, err := m.Find(id)
+	return created, true, err
+}
+
+// UpdateOrCreate finds the first row matching match and updates it with data,
+// or creates a new row with the union of match and data. Returns the final row.
+func (m *Model) UpdateOrCreate(match map[string]any, data map[string]any) (map[string]any, error) {
+	q := m.Query()
+	for col, val := range match {
+		q = q.Where(col, "=", val)
+	}
+	row, err := q.First()
+	if err == nil {
+		pk := m.PrimaryKey
+		if pk == "" {
+			pk = "id"
+		}
+		if err := m.Save(row[pk], data); err != nil {
+			return nil, err
+		}
+		return m.Find(row[pk])
+	}
+
+	merged := make(map[string]any, len(match)+len(data))
+	for k, v := range match {
+		merged[k] = v
+	}
+	for k, v := range data {
+		merged[k] = v
+	}
+	id, err := m.Create(merged)
+	if err != nil {
+		return nil, err
+	}
+	return m.Find(id)
 }
 
 // Count returns the number of rows in the table.

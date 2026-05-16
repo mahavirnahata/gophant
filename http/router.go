@@ -23,6 +23,8 @@ type route struct {
 
 // Route is returned by Get/Post/etc. and allows the caller to assign a name.
 type Route struct {
+	router      *Router
+	idx         int
 	namedRoutes map[string]string
 	pattern     string
 }
@@ -30,7 +32,17 @@ type Route struct {
 // Name registers a name for this route, enabling URL generation via Router.URL().
 func (rt *Route) Name(name string) *Route {
 	rt.namedRoutes[name] = rt.pattern
+	if rt.idx >= 0 && rt.idx < len(rt.router.routes) {
+		rt.router.routes[rt.idx].name = name
+	}
 	return rt
+}
+
+// RouteInfo is a read-only snapshot of a registered route (used by route:list).
+type RouteInfo struct {
+	Method  string
+	Pattern string
+	Name    string
 }
 
 type Router struct {
@@ -71,47 +83,63 @@ func (r *Router) MethodNotAllowed(h Handler) {
 	r.methodNotAllowed = h
 }
 
-func (r *Router) add(method, pattern string, h Handler, m []Middleware) {
+func (r *Router) add(method, pattern string, h Handler, m []Middleware) int {
 	pattern = r.withBase(pattern)
 	key := method + " " + pattern
 	if r.routeSet == nil {
 		r.routeSet = map[string]bool{}
 	}
 	if r.routeSet[key] {
-		return
+		// return index of existing route
+		for i, rt := range r.routes {
+			if rt.method == method && rt.pattern == pattern {
+				return i
+			}
+		}
+		return -1
 	}
 	r.routeSet[key] = true
 	segments := splitPattern(pattern)
 	r.routes = append(r.routes, route{method: method, pattern: pattern, segments: segments, handler: h, middleware: m})
+	return len(r.routes) - 1
 }
 
-func (r *Router) newRoute(pattern string) *Route {
-	return &Route{namedRoutes: r.namedRoutes, pattern: r.withBase(pattern)}
+func (r *Router) newRoute(pattern string, idx int) *Route {
+	return &Route{router: r, idx: idx, namedRoutes: r.namedRoutes, pattern: r.withBase(pattern)}
 }
 
 func (r *Router) Get(pattern string, h Handler, m ...Middleware) *Route {
-	r.add(http.MethodGet, pattern, h, m)
-	return r.newRoute(pattern)
+	idx := r.add(http.MethodGet, pattern, h, m)
+	return r.newRoute(pattern, idx)
 }
 
 func (r *Router) Post(pattern string, h Handler, m ...Middleware) *Route {
-	r.add(http.MethodPost, pattern, h, m)
-	return r.newRoute(pattern)
+	idx := r.add(http.MethodPost, pattern, h, m)
+	return r.newRoute(pattern, idx)
 }
 
 func (r *Router) Put(pattern string, h Handler, m ...Middleware) *Route {
-	r.add(http.MethodPut, pattern, h, m)
-	return r.newRoute(pattern)
+	idx := r.add(http.MethodPut, pattern, h, m)
+	return r.newRoute(pattern, idx)
 }
 
 func (r *Router) Patch(pattern string, h Handler, m ...Middleware) *Route {
-	r.add(http.MethodPatch, pattern, h, m)
-	return r.newRoute(pattern)
+	idx := r.add(http.MethodPatch, pattern, h, m)
+	return r.newRoute(pattern, idx)
 }
 
 func (r *Router) Delete(pattern string, h Handler, m ...Middleware) *Route {
-	r.add(http.MethodDelete, pattern, h, m)
-	return r.newRoute(pattern)
+	idx := r.add(http.MethodDelete, pattern, h, m)
+	return r.newRoute(pattern, idx)
+}
+
+// Routes returns a snapshot of all registered routes (for route:list and introspection).
+func (r *Router) Routes() []RouteInfo {
+	out := make([]RouteInfo, len(r.routes))
+	for i, rt := range r.routes {
+		out[i] = RouteInfo{Method: rt.method, Pattern: rt.pattern, Name: rt.name}
+	}
+	return out
 }
 
 // URL generates a URL for a named route, substituting {param} segments in order.
@@ -147,11 +175,17 @@ func (r *Router) Resource(resource string, controller any) {
 	if h, ok := methodHandler(v, "Index"); ok {
 		r.Get(base, h).Name(resource + ".index")
 	}
+	if h, ok := methodHandler(v, "Create"); ok {
+		r.Get(base+"/create", h).Name(resource + ".create")
+	}
 	if h, ok := methodHandler(v, "Show"); ok {
 		r.Get(base+"/{id}", h).Name(resource + ".show")
 	}
 	if h, ok := methodHandler(v, "Store"); ok {
 		r.Post(base, h).Name(resource + ".store")
+	}
+	if h, ok := methodHandler(v, "Edit"); ok {
+		r.Get(base+"/{id}/edit", h).Name(resource + ".edit")
 	}
 	if h, ok := methodHandler(v, "Update"); ok {
 		r.Put(base+"/{id}", h).Name(resource + ".update")
@@ -239,10 +273,12 @@ func applyAutoView(c *Context, v any) {
 	}
 }
 
-func (r *Router) Group(prefix string, fn func(*Router)) {
+// Group creates a route group with a shared prefix and optional middleware.
+// Routes defined inside fn inherit the group's prefix and middleware.
+func (r *Router) Group(prefix string, fn func(*Router), middleware ...Middleware) {
 	child := &Router{
 		routes:           r.routes,
-		middleware:       r.middleware,
+		middleware:       append(append([]Middleware{}, r.middleware...), middleware...),
 		view:             r.view,
 		basePath:         r.withBase(prefix),
 		notFound:         r.notFound,
@@ -257,6 +293,17 @@ func (r *Router) Group(prefix string, fn func(*Router)) {
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	path := cleanPath(req.URL.Path)
 	method := req.Method
+
+	// Form method spoofing: allow _method=PUT|PATCH|DELETE from HTML POST forms.
+	if method == http.MethodPost {
+		if m := req.FormValue("_method"); m != "" {
+			switch strings.ToUpper(m) {
+			case http.MethodPut, http.MethodPatch, http.MethodDelete:
+				req.Method = strings.ToUpper(m)
+				method = req.Method
+			}
+		}
+	}
 
 	var matched []route
 	for _, rt := range r.routes {

@@ -2,10 +2,12 @@ package validation
 
 import (
 	"database/sql"
+	"fmt"
 	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/mahavirnahata/gophant/db"
 )
@@ -48,11 +50,28 @@ func (v *Validator) WithMessages(msgs map[string]string) *Validator {
 }
 
 // Field validates a single field against one or more rules.
+// Special rules: Bail() stops after the first error; Sometimes() skips if field is absent.
 func (v *Validator) Field(name string, rules ...Rule) *Validator {
+	_, present := v.data[name]
 	val := v.data[name]
+	bail := false
+
 	for _, rule := range rules {
-		if code := rule(val); code != "" {
+		code := rule(val)
+		switch code {
+		case "_bail_":
+			bail = true
+		case "_skip_":
+			if !present {
+				return v
+			}
+		case "":
+			// no error
+		default:
 			v.errors[name] = append(v.errors[name], v.formatError(name, code))
+			if bail {
+				return v
+			}
 		}
 	}
 	return v
@@ -123,21 +142,27 @@ func (v *Validator) formatError(field, code string) string {
 }
 
 var defaultMessages = map[string]string{
-	"required":  "The :field field is required.",
-	"email":     "The :field field must be a valid email address.",
-	"min":       "The :field field must be at least :value characters.",
-	"max":       "The :field field must not exceed :value characters.",
-	"numeric":   "The :field field must be a number.",
-	"alpha":     "The :field field must only contain letters.",
-	"in":        "The selected :field is invalid.",
-	"regex":     "The :field field format is invalid.",
-	"confirmed": "The :field confirmation does not match.",
-	"unique":    "The :field has already been taken.",
-	"url":       "The :field field must be a valid URL.",
-	"uuid":      "The :field field must be a valid UUID.",
-	"json":      "The :field field must be valid JSON.",
-	"boolean":   "The :field field must be true or false.",
-	"date":      "The :field field must be a valid date.",
+	"required":   "The :field field is required.",
+	"email":      "The :field field must be a valid email address.",
+	"min":        "The :field field must be at least :value characters.",
+	"max":        "The :field field must not exceed :value characters.",
+	"numeric":    "The :field field must be a number.",
+	"alpha":      "The :field field must only contain letters.",
+	"alpha_num":  "The :field field must only contain letters and numbers.",
+	"in":         "The selected :field is invalid.",
+	"not_in":     "The selected :field is invalid.",
+	"regex":      "The :field field format is invalid.",
+	"confirmed":  "The :field confirmation does not match.",
+	"different":  "The :field field and :value must be different.",
+	"unique":     "The :field has already been taken.",
+	"url":        "The :field field must be a valid URL.",
+	"uuid":       "The :field field must be a valid UUID.",
+	"json":       "The :field field must be valid JSON.",
+	"boolean":    "The :field field must be true or false.",
+	"date":       "The :field field must be a valid date.",
+	"before":     "The :field must be a date before :value.",
+	"after":      "The :field must be a date after :value.",
+	"between":    "The :field must be between :value.",
 }
 
 func buildDefault(field, rule, param string) string {
@@ -380,5 +405,134 @@ func Unique(conn *db.DB, table, column string) RuleWith {
 			return "unique"
 		}
 		return "unique"
+	}
+}
+
+// Different checks that the field value is different from another field.
+func Different(other string) RuleWith {
+	return func(val string, v *Validator) string {
+		if val == v.data[other] {
+			return "different:" + other
+		}
+		return ""
+	}
+}
+
+// Bail signals Field() to stop validating after the first error for this field.
+// Place it first in the rule list.
+func Bail() Rule {
+	return func(_ string) string { return "_bail_" }
+}
+
+// Sometimes causes Field() to skip all rules when the field is not present in the input.
+// Place it first in the rule list.
+func Sometimes() Rule {
+	return func(_ string) string { return "_skip_" }
+}
+
+// commonLayouts are tried in order when no layout is specified for Date/Before/After.
+var commonLayouts = []string{
+	"2006-01-02",
+	"2006-01-02 15:04:05",
+	time.RFC3339,
+	"01/02/2006",
+	"02-01-2006",
+}
+
+func parseDate(val string, layouts []string) (time.Time, bool) {
+	for _, l := range layouts {
+		if t, err := time.Parse(l, val); err == nil {
+			return t, true
+		}
+	}
+	return time.Time{}, false
+}
+
+// Date validates that the value is a parseable date. Accepts common formats by default;
+// pass an explicit Go time layout to restrict to that format.
+func Date(layout ...string) Rule {
+	layouts := commonLayouts
+	if len(layout) > 0 {
+		layouts = layout
+	}
+	return func(val string) string {
+		if val == "" {
+			return ""
+		}
+		if _, ok := parseDate(val, layouts); !ok {
+			return "date"
+		}
+		return ""
+	}
+}
+
+// Before validates that the date value is before ref.
+// ref must be parseable by the same layouts.
+func Before(ref string, layout ...string) Rule {
+	layouts := commonLayouts
+	if len(layout) > 0 {
+		layouts = layout
+	}
+	refTime, _ := parseDate(ref, layouts)
+	return func(val string) string {
+		if val == "" {
+			return ""
+		}
+		t, ok := parseDate(val, layouts)
+		if !ok || !t.Before(refTime) {
+			return "before:" + ref
+		}
+		return ""
+	}
+}
+
+// After validates that the date value is after ref.
+func After(ref string, layout ...string) Rule {
+	layouts := commonLayouts
+	if len(layout) > 0 {
+		layouts = layout
+	}
+	refTime, _ := parseDate(ref, layouts)
+	return func(val string) string {
+		if val == "" {
+			return ""
+		}
+		t, ok := parseDate(val, layouts)
+		if !ok || !t.After(refTime) {
+			return "after:" + ref
+		}
+		return ""
+	}
+}
+
+// Between validates that the numeric value is between min and max (inclusive).
+func Between(min, max float64) Rule {
+	return func(val string) string {
+		if val == "" {
+			return ""
+		}
+		f, err := strconv.ParseFloat(val, 64)
+		if err != nil || f < min || f > max {
+			return fmt.Sprintf("between:%v,%v", min, max)
+		}
+		return ""
+	}
+}
+
+// NotIn validates that the value is not one of the listed options.
+// (Distinct from the existing NotIn — this is the named version matching defaultMessages.)
+func NotInList(list ...string) Rule {
+	set := map[string]bool{}
+	for _, v := range list {
+		set[v] = true
+	}
+	return func(val string) string {
+		if val == "" {
+			return ""
+		}
+		if set[val] {
+			return "not_in"
+		}
+		return ""
 	}
 }

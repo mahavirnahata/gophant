@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
+	"os"
 	"reflect"
 	"strconv"
 	"strings"
@@ -21,6 +23,7 @@ type Context struct {
 	Values       map[string]any
 	Errors       []error
 	Written      bool
+	Aborted      bool
 	AutoViewName string
 	Models       map[string]any
 
@@ -248,6 +251,64 @@ func (c *Context) Set(key string, val any) {
 func (c *Context) Get(key string) (any, bool) {
 	v, ok := c.Values[key]
 	return v, ok
+}
+
+// Abort marks this request as aborted. Subsequent middleware that checks c.Aborted will stop.
+func (c *Context) Abort() {
+	c.Aborted = true
+}
+
+// AbortWithStatus marks the request aborted and writes an HTTP status with no body.
+func (c *Context) AbortWithStatus(code int) {
+	c.Aborted = true
+	if !c.Written {
+		c.Written = true
+		c.Writer.WriteHeader(code)
+	}
+}
+
+// Cookie returns the named request cookie.
+func (c *Context) Cookie(name string) (*http.Cookie, error) {
+	return c.Request.Cookie(name)
+}
+
+// SetCookie adds a Set-Cookie response header.
+func (c *Context) SetCookie(cookie *http.Cookie) {
+	http.SetCookie(c.Writer, cookie)
+}
+
+// FormFile returns the first uploaded file for the given field name.
+func (c *Context) FormFile(field string) (*multipart.FileHeader, error) {
+	if err := c.Request.ParseMultipartForm(32 << 20); err != nil {
+		return nil, err
+	}
+	_, fh, err := c.Request.FormFile(field)
+	return fh, err
+}
+
+// SaveFile copies an uploaded file to dest on disk.
+func (c *Context) SaveFile(fh *multipart.FileHeader, dest string) error {
+	src, err := fh.Open()
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+	dst, err := os.Create(dest)
+	if err != nil {
+		return err
+	}
+	defer dst.Close()
+	_, err = io.Copy(dst, src)
+	return err
+}
+
+// Back redirects the client to the Referer URL, or to fallback if Referer is empty.
+func (c *Context) Back(fallback string) {
+	ref := c.Request.Referer()
+	if ref == "" {
+		ref = fallback
+	}
+	c.Redirect(http.StatusFound, ref)
 }
 
 // Error appends an error to the context error list (handled by ErrorHandler middleware).
