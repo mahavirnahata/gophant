@@ -21,6 +21,18 @@ type route struct {
 	middleware []Middleware
 }
 
+// Route is returned by Get/Post/etc. and allows the caller to assign a name.
+type Route struct {
+	namedRoutes map[string]string
+	pattern     string
+}
+
+// Name registers a name for this route, enabling URL generation via Router.URL().
+func (rt *Route) Name(name string) *Route {
+	rt.namedRoutes[name] = rt.pattern
+	return rt
+}
+
 type Router struct {
 	routes           []route
 	middleware       []Middleware
@@ -29,10 +41,15 @@ type Router struct {
 	notFound         Handler
 	methodNotAllowed Handler
 	routeSet         map[string]bool
+	namedRoutes      map[string]string
 }
 
 func NewRouter(view ViewRenderer) *Router {
-	r := &Router{view: view, routeSet: map[string]bool{}}
+	r := &Router{
+		view:        view,
+		routeSet:    map[string]bool{},
+		namedRoutes: map[string]string{},
+	}
 	r.notFound = func(c *Context) {
 		c.Text(http.StatusNotFound, "Not Found")
 	}
@@ -61,7 +78,6 @@ func (r *Router) add(method, pattern string, h Handler, m []Middleware) {
 		r.routeSet = map[string]bool{}
 	}
 	if r.routeSet[key] {
-		// duplicate route, ignore
 		return
 	}
 	r.routeSet[key] = true
@@ -69,56 +85,79 @@ func (r *Router) add(method, pattern string, h Handler, m []Middleware) {
 	r.routes = append(r.routes, route{method: method, pattern: pattern, segments: segments, handler: h, middleware: m})
 }
 
-func (r *Router) withBase(pattern string) string {
-	if r.basePath == "" {
-		return pattern
+func (r *Router) newRoute(pattern string) *Route {
+	return &Route{namedRoutes: r.namedRoutes, pattern: r.withBase(pattern)}
+}
+
+func (r *Router) Get(pattern string, h Handler, m ...Middleware) *Route {
+	r.add(http.MethodGet, pattern, h, m)
+	return r.newRoute(pattern)
+}
+
+func (r *Router) Post(pattern string, h Handler, m ...Middleware) *Route {
+	r.add(http.MethodPost, pattern, h, m)
+	return r.newRoute(pattern)
+}
+
+func (r *Router) Put(pattern string, h Handler, m ...Middleware) *Route {
+	r.add(http.MethodPut, pattern, h, m)
+	return r.newRoute(pattern)
+}
+
+func (r *Router) Patch(pattern string, h Handler, m ...Middleware) *Route {
+	r.add(http.MethodPatch, pattern, h, m)
+	return r.newRoute(pattern)
+}
+
+func (r *Router) Delete(pattern string, h Handler, m ...Middleware) *Route {
+	r.add(http.MethodDelete, pattern, h, m)
+	return r.newRoute(pattern)
+}
+
+// URL generates a URL for a named route, substituting {param} segments in order.
+//
+//	r.URL("users.show", "42")  →  "/users/42"
+func (r *Router) URL(name string, params ...string) string {
+	pattern, ok := r.namedRoutes[name]
+	if !ok {
+		return ""
 	}
 	if pattern == "/" {
-		return r.basePath
+		return "/"
 	}
-	return strings.TrimRight(r.basePath, "/") + pattern
+	segments := strings.Split(strings.Trim(pattern, "/"), "/")
+	pi := 0
+	for i, seg := range segments {
+		if strings.HasPrefix(seg, "{") && strings.HasSuffix(seg, "}") {
+			if pi < len(params) {
+				segments[i] = params[pi]
+				pi++
+			}
+		}
+	}
+	return "/" + strings.Join(segments, "/")
 }
 
-func (r *Router) Get(pattern string, h Handler, m ...Middleware) {
-	r.add(http.MethodGet, pattern, h, m)
-}
-func (r *Router) Post(pattern string, h Handler, m ...Middleware) {
-	r.add(http.MethodPost, pattern, h, m)
-}
-func (r *Router) Put(pattern string, h Handler, m ...Middleware) {
-	r.add(http.MethodPut, pattern, h, m)
-}
-func (r *Router) Patch(pattern string, h Handler, m ...Middleware) {
-	r.add(http.MethodPatch, pattern, h, m)
-}
-func (r *Router) Delete(pattern string, h Handler, m ...Middleware) {
-	r.add(http.MethodDelete, pattern, h, m)
-}
-
-// Resource registers conventional REST routes for a controller.
-// Index   GET    /resource
-// Show    GET    /resource/{id}
-// Store   POST   /resource
-// Update  PUT    /resource/{id}
-// Destroy DELETE /resource/{id}
+// Resource registers conventional REST routes for a controller struct.
+// Recognized methods: Index, Show, Store, Update, Destroy.
 func (r *Router) Resource(resource string, controller any) {
 	base := "/" + strings.Trim(resource, "/")
 	v := reflect.ValueOf(controller)
 
 	if h, ok := methodHandler(v, "Index"); ok {
-		r.Get(base, h)
+		r.Get(base, h).Name(resource + ".index")
 	}
 	if h, ok := methodHandler(v, "Show"); ok {
-		r.Get(base+"/{id}", h)
+		r.Get(base+"/{id}", h).Name(resource + ".show")
 	}
 	if h, ok := methodHandler(v, "Store"); ok {
-		r.Post(base, h)
+		r.Post(base, h).Name(resource + ".store")
 	}
 	if h, ok := methodHandler(v, "Update"); ok {
-		r.Put(base+"/{id}", h)
+		r.Put(base+"/{id}", h).Name(resource + ".update")
 	}
 	if h, ok := methodHandler(v, "Destroy"); ok {
-		r.Delete(base+"/{id}", h)
+		r.Delete(base+"/{id}", h).Name(resource + ".destroy")
 	}
 }
 
@@ -193,9 +232,6 @@ func applyAutoView(c *Context, v any) {
 		for k, v := range val {
 			c.Set(k, v)
 		}
-		if c.AutoViewName == "" {
-			// leave empty unless explicitly set
-		}
 	default:
 		if val != nil {
 			c.Set("data", val)
@@ -212,6 +248,7 @@ func (r *Router) Group(prefix string, fn func(*Router)) {
 		notFound:         r.notFound,
 		methodNotAllowed: r.methodNotAllowed,
 		routeSet:         r.routeSet,
+		namedRoutes:      r.namedRoutes,
 	}
 	fn(child)
 	r.routes = child.routes
@@ -257,6 +294,16 @@ func (r *Router) applyMiddleware(h Handler, m ...Middleware) Handler {
 		h = m[i](h)
 	}
 	return h
+}
+
+func (r *Router) withBase(pattern string) string {
+	if r.basePath == "" {
+		return pattern
+	}
+	if pattern == "/" {
+		return r.basePath
+	}
+	return strings.TrimRight(r.basePath, "/") + pattern
 }
 
 func cleanPath(path string) string {

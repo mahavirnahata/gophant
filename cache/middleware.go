@@ -31,6 +31,7 @@ func ResponseCache(c *Cache, opts ResponseCacheOptions) gomvchttp.Middleware {
 					ctx.Header("Content-Type", "text/html; charset=utf-8")
 					ctx.StatusCode(200)
 					ctx.Writer.WriteHeader(ctx.Status)
+					ctx.Written = true
 					_, _ = ctx.Writer.Write(b)
 					return
 				}

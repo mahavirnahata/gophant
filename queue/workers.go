@@ -3,6 +3,7 @@ package queue
 import (
 	"context"
 	"errors"
+	"log"
 	"time"
 )
 
@@ -44,7 +45,7 @@ func runLoop(ctx context.Context, q *RedisQueue, reg *Registry, dl *DeadLetter, 
 			continue
 		}
 		if err := HandlePayloadWithRetry(reg, dl, payload); err != nil {
-			return err
+			log.Printf("worker: job error: %v", err)
 		}
 	}
 }

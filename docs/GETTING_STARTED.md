@@ -51,19 +51,31 @@ http://localhost:8080
 ```
 APP_NAME=gophant
 APP_ENV=local
-APP_KEY=change-me
+APP_KEY=change-me           # generate: openssl rand -base64 32
 APP_ADDR=:8080
 
 DB_DRIVER=mysql
 DB_DSN=user:pass@tcp(127.0.0.1:3306)/dbname?parseTime=true
+DB_MAX_OPEN_CONNS=25
+DB_MAX_IDLE_CONNS=5
+DB_CONN_MAX_LIFETIME=300    # seconds
 
 REDIS_ADDR=localhost:6379
 REDIS_PASSWORD=
 REDIS_DB=0
 
-CACHE_DRIVER=memory
+CACHE_DRIVER=memory         # or redis
 CACHE_PREFIX=gophant:cache:
+
+# Server timeouts (seconds)
+SERVER_READ_TIMEOUT=15
+SERVER_WRITE_TIMEOUT=15
+SERVER_IDLE_TIMEOUT=60
 ```
+
+> **APP_KEY must be set.** If omitted, a random key is generated on every boot, invalidating
+> all sessions and CSRF tokens on restart. The database is auto-connected when `DB_DRIVER`
+> and `DB_DSN` are set — no manual wiring needed.
 
 ## 4) Build a CLI
 

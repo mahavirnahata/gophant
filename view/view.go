@@ -12,10 +12,26 @@ import (
 type Engine struct {
 	basePath string
 	tmpl     *template.Template
+	funcs    template.FuncMap
 }
 
 func New(basePath string) *Engine {
-	return &Engine{basePath: basePath}
+	return &Engine{
+		basePath: basePath,
+		funcs:    template.FuncMap{},
+	}
+}
+
+// AddFunc registers a single template function. Must be called before Load().
+func (e *Engine) AddFunc(name string, fn any) {
+	e.funcs[name] = fn
+}
+
+// AddFuncs registers multiple template functions at once. Must be called before Load().
+func (e *Engine) AddFuncs(funcs template.FuncMap) {
+	for k, v := range funcs {
+		e.funcs[k] = v
+	}
 }
 
 func (e *Engine) Load(pattern string) error {
@@ -26,7 +42,7 @@ func (e *Engine) Load(pattern string) error {
 	if len(files) == 0 {
 		return errors.New("no view files found")
 	}
-	t, err := template.ParseFiles(files...)
+	t, err := template.New("").Funcs(e.funcs).ParseFiles(files...)
 	if err != nil {
 		return err
 	}

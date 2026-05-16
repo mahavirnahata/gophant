@@ -3,7 +3,9 @@ package migrate
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"sort"
+	"strconv"
 	"time"
 )
 
@@ -13,9 +15,32 @@ type Migration struct {
 	Down func(*sql.DB) error
 }
 
-type Migrator struct {
-	DB *sql.DB
+// Dialect lets the Migrator generate correct placeholders for the target database.
+// Use QuestionDialect for MySQL/SQLite and DollarDialect for PostgreSQL.
+type Dialect interface {
+	Placeholder(n int) string
 }
+
+type QuestionDialect struct{}
+
+func (d QuestionDialect) Placeholder(_ int) string { return "?" }
+
+type DollarDialect struct{}
+
+func (d DollarDialect) Placeholder(n int) string { return "$" + strconv.Itoa(n) }
+
+type Migrator struct {
+	DB      *sql.DB
+	Dialect Dialect
+}
+
+func (m *Migrator) ph(n int) string {
+	if m.Dialect == nil {
+		return "?"
+	}
+	return m.Dialect.Placeholder(n)
+}
+
 
 func (m *Migrator) EnsureTable() error {
 	_, err := m.DB.Exec(`CREATE TABLE IF NOT EXISTS migrations (id VARCHAR(255) PRIMARY KEY, batch INT NOT NULL, ran_at TIMESTAMP NOT NULL)`)
@@ -83,7 +108,10 @@ func (m *Migrator) Up(migrations []Migration) error {
 		if err := mig.Up(m.DB); err != nil {
 			return err
 		}
-		_, err = m.DB.Exec(`INSERT INTO migrations (id, batch, ran_at) VALUES (?, ?, ?)`, mig.ID, batch, time.Now())
+		_, err = m.DB.Exec(
+				fmt.Sprintf(`INSERT INTO migrations (id, batch, ran_at) VALUES (%s, %s, %s)`, m.ph(1), m.ph(2), m.ph(3)),
+				mig.ID, batch, time.Now(),
+			)
 		if err != nil {
 			return err
 		}
@@ -125,7 +153,7 @@ func (m *Migrator) Down(migrations []Migration, steps int) error {
 		if err := mig.Down(m.DB); err != nil {
 			return err
 		}
-		_, err := m.DB.Exec(`DELETE FROM migrations WHERE id = ?`, id)
+		_, err := m.DB.Exec(fmt.Sprintf(`DELETE FROM migrations WHERE id = %s`, m.ph(1)), id)
 		if err != nil {
 			return err
 		}

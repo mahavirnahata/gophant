@@ -3,31 +3,49 @@ package config
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"log"
 	"os"
 	"strconv"
 	"strings"
 )
 
 type Config struct {
-	AppName            string
-	AppEnv             string
-	AppKey             string
-	BaseURL            string
-	Addr               string
-	LogLevel           string
+	AppName string
+	AppEnv  string
+	AppKey  string
+	BaseURL string
+	Addr    string
+
+	// Database
+	DBDriver          string
+	DBDsn             string
+	DBMaxOpenConns    int
+	DBMaxIdleConns    int
+	DBConnMaxLifetime int // seconds
+
+	// Redis
+	RedisAddr     string
+	RedisPassword string
+	RedisDB       int
+
+	// Queue
+	QueueKey        string
+	QueueWorkers    int
+	QueueDeadPrefix string
+
+	// Cache
+	CacheDriver string
+	CachePrefix string
+
+	// Session
 	SessionCookie      string
 	SessionSecure      bool
 	SessionMaxAgeHours int
-	DBDriver           string
-	DBDsn              string
-	RedisAddr          string
-	RedisPassword      string
-	RedisDB            int
-	QueueKey           string
-	QueueWorkers       int
-	QueueDeadPrefix    string
-	CacheDriver        string
-	CachePrefix        string
+
+	// Server timeouts (seconds)
+	ServerReadTimeout  int
+	ServerWriteTimeout int
+	ServerIdleTimeout  int
 }
 
 func Load() *Config {
@@ -39,12 +57,11 @@ func Load() *Config {
 		AppKey:             getenv("APP_KEY", ""),
 		BaseURL:            getenv("APP_URL", "http://localhost:8080"),
 		Addr:               getenv("APP_ADDR", ":8080"),
-		LogLevel:           getenv("LOG_LEVEL", "info"),
-		SessionCookie:      getenv("SESSION_COOKIE", "_gophant_session"),
-		SessionSecure:      getenvBool("SESSION_SECURE", false),
-		SessionMaxAgeHours: getenvInt("SESSION_MAX_AGE_HOURS", 168),
 		DBDriver:           getenv("DB_DRIVER", ""),
 		DBDsn:              getenv("DB_DSN", ""),
+		DBMaxOpenConns:     getenvInt("DB_MAX_OPEN_CONNS", 25),
+		DBMaxIdleConns:     getenvInt("DB_MAX_IDLE_CONNS", 5),
+		DBConnMaxLifetime:  getenvInt("DB_CONN_MAX_LIFETIME", 300),
 		RedisAddr:          getenv("REDIS_ADDR", "localhost:6379"),
 		RedisPassword:      getenv("REDIS_PASSWORD", ""),
 		RedisDB:            getenvInt("REDIS_DB", 0),
@@ -53,10 +70,17 @@ func Load() *Config {
 		QueueDeadPrefix:    getenv("QUEUE_DEAD_PREFIX", "gophant:dead"),
 		CacheDriver:        getenv("CACHE_DRIVER", "memory"),
 		CachePrefix:        getenv("CACHE_PREFIX", "gophant:cache:"),
+		SessionCookie:      getenv("SESSION_COOKIE", "_gophant_session"),
+		SessionSecure:      getenvBool("SESSION_SECURE", false),
+		SessionMaxAgeHours: getenvInt("SESSION_MAX_AGE_HOURS", 168),
+		ServerReadTimeout:  getenvInt("SERVER_READ_TIMEOUT", 15),
+		ServerWriteTimeout: getenvInt("SERVER_WRITE_TIMEOUT", 15),
+		ServerIdleTimeout:  getenvInt("SERVER_IDLE_TIMEOUT", 60),
 	}
 
 	if cfg.AppKey == "" {
 		cfg.AppKey = randomKey()
+		log.Println("WARNING: APP_KEY is not set. A random key was generated — sessions and CSRF tokens will be invalidated on every restart. Set APP_KEY in your .env file.")
 	}
 	return cfg
 }

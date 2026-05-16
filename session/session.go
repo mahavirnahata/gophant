@@ -13,6 +13,8 @@ import (
 	gomvchttp "github.com/mahavirnahata/gophant/http"
 )
 
+const flashPrefix = "_flash:"
+
 type Manager struct {
 	Store      Store
 	CookieName string
@@ -50,6 +52,13 @@ func (m *Manager) Middleware() gomvchttp.Middleware {
 			sess, _ := m.load(c.Request)
 			c.Set("session", sess)
 
+			// Auto-inject flash values into context so templates get {{ .flash_error }} etc.
+			for k, v := range sess.Values {
+				if strings.HasPrefix(k, flashPrefix) {
+					c.Set("flash_"+strings.TrimPrefix(k, flashPrefix), v)
+				}
+			}
+
 			wrapper := &sessionWriter{ResponseWriter: c.Writer, mgr: m, sess: sess}
 			c.Writer = wrapper
 
@@ -62,6 +71,7 @@ func (m *Manager) Middleware() gomvchttp.Middleware {
 	}
 }
 
+// FromContext retrieves the current session from the request context.
 func FromContext(c *gomvchttp.Context) *Session {
 	if v, ok := c.Get("session"); ok {
 		if s, ok := v.(*Session); ok {
@@ -70,6 +80,8 @@ func FromContext(c *gomvchttp.Context) *Session {
 	}
 	return &Session{Values: map[string]any{}}
 }
+
+// ── Value accessors ──────────────────────────────────────────────────────────
 
 func (s *Session) Get(key string) (any, bool) {
 	v, ok := s.Values[key]
@@ -86,6 +98,54 @@ func (s *Session) Delete(key string) {
 	s.changed = true
 }
 
+// All returns a copy of all non-flash session values.
+func (s *Session) All() map[string]any {
+	out := make(map[string]any, len(s.Values))
+	for k, v := range s.Values {
+		if !strings.HasPrefix(k, flashPrefix) {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// ── Flash ────────────────────────────────────────────────────────────────────
+
+// Flash stores a value that persists through exactly one redirect.
+// Retrieve it on the next request with GetFlash.
+func (s *Session) Flash(key string, val any) {
+	s.Set(flashPrefix+key, val)
+}
+
+// GetFlash reads a flashed value and removes it from the session (delete-on-read).
+func (s *Session) GetFlash(key string) (any, bool) {
+	v, ok := s.Get(flashPrefix + key)
+	if ok {
+		s.Delete(flashPrefix + key)
+	}
+	return v, ok
+}
+
+// FlashString is a convenience wrapper that returns the flash value as a string.
+func (s *Session) FlashString(key string) string {
+	v, ok := s.GetFlash(key)
+	if !ok {
+		return ""
+	}
+	if str, ok := v.(string); ok {
+		return str
+	}
+	return ""
+}
+
+// HasFlash reports whether a flash value exists for key.
+func (s *Session) HasFlash(key string) bool {
+	_, ok := s.Values[flashPrefix+key]
+	return ok
+}
+
+// ── Lifecycle ────────────────────────────────────────────────────────────────
+
 func (s *Session) Regenerate() {
 	if s.manager == nil {
 		return
@@ -101,6 +161,8 @@ func (s *Session) Regenerate() {
 func (s *Session) Destroy() {
 	s.destroyed = true
 }
+
+// ── Internal ─────────────────────────────────────────────────────────────────
 
 func (m *Manager) load(r *http.Request) (*Session, error) {
 	cookie, err := r.Cookie(m.CookieName)

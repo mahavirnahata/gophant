@@ -1,8 +1,13 @@
 package gophant
 
 import (
+	"context"
+	"errors"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/mahavirnahata/gophant/auth"
@@ -18,6 +23,7 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+// App is the root application object. Create one with New() and call Run().
 type App struct {
 	Config    *config.Config
 	View      *view.Engine
@@ -32,8 +38,8 @@ type App struct {
 
 func New() *App {
 	cfg := config.Load()
+
 	v := view.New("views")
-	_ = v.Load("**/*.html")
 
 	r := gomvchttp.NewRouter(v)
 	r.Use(middleware.Recover())
@@ -63,6 +69,27 @@ func New() *App {
 		Container: container.New(),
 	}
 
+	// Auto-connect database when DB_DRIVER and DB_DSN are configured.
+	if cfg.DBDriver != "" && cfg.DBDsn != "" {
+		conn, err := db.Open(cfg.DBDriver, cfg.DBDsn, nil)
+		if err != nil {
+			log.Printf("db: failed to connect (%s): %v", cfg.DBDriver, err)
+		} else {
+			conn.Conn.SetMaxOpenConns(cfg.DBMaxOpenConns)
+			conn.Conn.SetMaxIdleConns(cfg.DBMaxIdleConns)
+			if cfg.DBConnMaxLifetime > 0 {
+				conn.Conn.SetConnMaxLifetime(time.Duration(cfg.DBConnMaxLifetime) * time.Second)
+			}
+			app.DB = conn
+			db.SetDefaultDB(conn)
+		}
+	}
+
+	// Register built-in template functions after the router exists so url() can close over it.
+	v.AddFunc("url", r.URL)
+	v.AddFunc("asset", func(path string) string { return "/" + path })
+	_ = v.Load("**/*.html")
+
 	app.Container.Set(app)
 	app.Container.Set(app.Auth)
 	app.Container.Set(app.Gate)
@@ -73,6 +100,7 @@ func New() *App {
 		return func(c *gomvchttp.Context) {
 			c.Set("app", app)
 			c.Set("container", app.Container)
+			c.Set("_router", r)
 			next(c)
 		}
 	})
@@ -80,6 +108,38 @@ func New() *App {
 	applyRegisteredRoutes(app)
 
 	return app
+}
+
+// Run starts the HTTP server and blocks until SIGINT or SIGTERM is received,
+// then drains in-flight requests with a 30-second timeout.
+func (a *App) Run() {
+	srv := &http.Server{
+		Addr:         a.Config.Addr,
+		Handler:      a.Router,
+		ReadTimeout:  time.Duration(a.Config.ServerReadTimeout) * time.Second,
+		WriteTimeout: time.Duration(a.Config.ServerWriteTimeout) * time.Second,
+		IdleTimeout:  time.Duration(a.Config.ServerIdleTimeout) * time.Second,
+	}
+
+	go func() {
+		log.Printf("starting %s on %s (env=%s)", a.Config.AppName, a.Config.Addr, a.Config.AppEnv)
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatalf("server: %v", err)
+		}
+	}()
+
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	sig := <-quit
+	log.Printf("received %s, shutting down gracefully...", sig)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if err := srv.Shutdown(ctx); err != nil {
+		log.Printf("forced shutdown: %v", err)
+	}
+	log.Println("server stopped")
 }
 
 func newCache(cfg *config.Config) *cache.Cache {
@@ -95,12 +155,5 @@ func newCache(cfg *config.Config) *cache.Cache {
 		return cache.New(store)
 	default:
 		return cache.New(cache.NewMemoryStore())
-	}
-}
-
-func (a *App) Run() {
-	log.Printf("starting %s on %s", a.Config.AppName, a.Config.Addr)
-	if err := http.ListenAndServe(a.Config.Addr, a.Router); err != nil {
-		log.Fatal(err)
 	}
 }

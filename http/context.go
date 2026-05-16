@@ -1,7 +1,11 @@
 package http
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"reflect"
 	"strconv"
@@ -19,6 +23,10 @@ type Context struct {
 	Written      bool
 	AutoViewName string
 	Models       map[string]any
+
+	// lazy JSON body cache
+	bodyParsed bool
+	bodyData   map[string]any
 }
 
 func NewContext(w http.ResponseWriter, r *http.Request, vr ViewRenderer) *Context {
@@ -34,23 +42,139 @@ func NewContext(w http.ResponseWriter, r *http.Request, vr ViewRenderer) *Contex
 	}
 }
 
+// ── Request helpers ──────────────────────────────────────────────────────────
+
+// Context returns the request's context (carries deadlines, cancellation, tracing).
+func (c *Context) Context() context.Context {
+	return c.Request.Context()
+}
+
+// WithContext replaces the request's context (e.g., to inject a deadline).
+func (c *Context) WithContext(ctx context.Context) {
+	c.Request = c.Request.WithContext(ctx)
+}
+
+// Method returns the HTTP method of the current request.
+func (c *Context) Method() string {
+	return c.Request.Method
+}
+
+// Path returns the URL path of the current request.
+func (c *Context) Path() string {
+	return c.Request.URL.Path
+}
+
+// Param returns a route parameter (e.g., {id} → c.Param("id")).
 func (c *Context) Param(key string) string {
 	return c.Params[key]
 }
 
+// Query returns a query-string value.
 func (c *Context) Query(key string) string {
 	return c.Request.URL.Query().Get(key)
 }
 
+// QueryDefault returns a query-string value or a fallback if not set.
+func (c *Context) QueryDefault(key, fallback string) string {
+	if v := c.Request.URL.Query().Get(key); v != "" {
+		return v
+	}
+	return fallback
+}
+
+// Input returns the first non-empty value for key, checked in order:
+// route params → query string → JSON body → form values.
+func (c *Context) Input(key string) string {
+	if v, ok := c.Params[key]; ok {
+		return v
+	}
+	if v := c.Request.URL.Query().Get(key); v != "" {
+		return v
+	}
+	c.parseBody()
+	if c.bodyData != nil {
+		if v, ok := c.bodyData[key]; ok {
+			return fmt.Sprintf("%v", v)
+		}
+	}
+	if err := c.Request.ParseForm(); err == nil {
+		if v := c.Request.FormValue(key); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// GetHeader returns a request header value.
+func (c *Context) GetHeader(key string) string {
+	return c.Request.Header.Get(key)
+}
+
+// IsJSON reports whether the request body is JSON (Content-Type: application/json).
+func (c *Context) IsJSON() bool {
+	ct := c.Request.Header.Get("Content-Type")
+	return strings.Contains(ct, "application/json")
+}
+
+// IsAJAX reports whether the request was sent by XHR (X-Requested-With: XMLHttpRequest).
+func (c *Context) IsAJAX() bool {
+	return c.Request.Header.Get("X-Requested-With") == "XMLHttpRequest"
+}
+
+// IP returns the client IP, honouring X-Real-IP and X-Forwarded-For proxy headers.
+func (c *Context) IP() string {
+	if ip := c.Request.Header.Get("X-Real-IP"); ip != "" {
+		return strings.TrimSpace(ip)
+	}
+	if forwarded := c.Request.Header.Get("X-Forwarded-For"); forwarded != "" {
+		if comma := strings.Index(forwarded, ","); comma != -1 {
+			return strings.TrimSpace(forwarded[:comma])
+		}
+		return strings.TrimSpace(forwarded)
+	}
+	// Strip port from RemoteAddr
+	addr := c.Request.RemoteAddr
+	if idx := strings.LastIndex(addr, ":"); idx != -1 {
+		return addr[:idx]
+	}
+	return addr
+}
+
+// parseBody lazily decodes a JSON request body and caches the result.
+func (c *Context) parseBody() {
+	if c.bodyParsed {
+		return
+	}
+	c.bodyParsed = true
+	if !c.IsJSON() {
+		return
+	}
+	body, err := io.ReadAll(c.Request.Body)
+	if err != nil || len(body) == 0 {
+		return
+	}
+	// Restore body so downstream code can read it again (e.g., BindJSON).
+	c.Request.Body = io.NopCloser(bytes.NewReader(body))
+	_ = json.Unmarshal(body, &c.bodyData)
+}
+
+// ── Response helpers ─────────────────────────────────────────────────────────
+
+// Header sets a response header.
 func (c *Context) Header(key, value string) {
 	c.Writer.Header().Set(key, value)
 }
 
+// StatusCode sets the HTTP status code for the response (call before writing).
 func (c *Context) StatusCode(code int) {
 	c.Status = code
 }
 
+// JSON writes a JSON response. No-op if a response was already sent.
 func (c *Context) JSON(code int, v any) {
+	if c.Written {
+		return
+	}
 	c.Header("Content-Type", "application/json; charset=utf-8")
 	c.StatusCode(code)
 	c.Writer.WriteHeader(c.Status)
@@ -58,7 +182,11 @@ func (c *Context) JSON(code int, v any) {
 	_ = json.NewEncoder(c.Writer).Encode(v)
 }
 
+// Text writes a plain-text response. No-op if a response was already sent.
 func (c *Context) Text(code int, text string) {
+	if c.Written {
+		return
+	}
 	c.Header("Content-Type", "text/plain; charset=utf-8")
 	c.StatusCode(code)
 	c.Writer.WriteHeader(c.Status)
@@ -66,17 +194,26 @@ func (c *Context) Text(code int, text string) {
 	_, _ = c.Writer.Write([]byte(text))
 }
 
+// Redirect sends an HTTP redirect. No-op if a response was already sent.
 func (c *Context) Redirect(code int, location string) {
+	if c.Written {
+		return
+	}
 	http.Redirect(c.Writer, c.Request, location, code)
 	c.Written = true
 }
 
+// File serves a file from disk.
 func (c *Context) File(path string) {
 	http.ServeFile(c.Writer, c.Request, path)
 	c.Written = true
 }
 
+// Render executes a named HTML template. No-op if a response was already sent.
 func (c *Context) Render(code int, template string, data map[string]any) {
+	if c.Written {
+		return
+	}
 	c.StatusCode(code)
 	c.Writer.WriteHeader(c.Status)
 	c.Written = true
@@ -92,6 +229,18 @@ func (c *Context) Render(code int, template string, data map[string]any) {
 	_ = c.View.Render(c.Writer, template, data)
 }
 
+// URL generates a URL for a named route (requires the router to be in context).
+func (c *Context) URL(name string, params ...string) string {
+	if v, ok := c.Values["_router"]; ok {
+		if r, ok := v.(*Router); ok {
+			return r.URL(name, params...)
+		}
+	}
+	return ""
+}
+
+// ── Context value store ──────────────────────────────────────────────────────
+
 func (c *Context) Set(key string, val any) {
 	c.Values[key] = val
 }
@@ -101,6 +250,7 @@ func (c *Context) Get(key string) (any, bool) {
 	return v, ok
 }
 
+// Error appends an error to the context error list (handled by ErrorHandler middleware).
 func (c *Context) Error(err error) {
 	if err == nil {
 		return
@@ -116,6 +266,8 @@ func (c *Context) Model(key string) (any, bool) {
 	v, ok := c.Models[key]
 	return v, ok
 }
+
+// ── Body binding ─────────────────────────────────────────────────────────────
 
 func (c *Context) BindJSON(dest any) error {
 	dec := json.NewDecoder(c.Request.Body)
