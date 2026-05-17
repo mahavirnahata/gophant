@@ -90,6 +90,50 @@ func (m *TypedModel[T]) FirstOrCreate(match, defaults map[string]any) (T, bool, 
 	return typed, created, err
 }
 
+// TypedCreate inserts a struct as a new row, returning the last-insert ID.
+// Uses json struct tags for column mapping. Fields tagged omitempty are skipped when zero.
+//
+//	id, err := Users.TypedCreate(User{Name: "Alice", Email: "a@x.com"})
+func (m *TypedModel[T]) TypedCreate(v T) (int64, error) {
+	return m.Model.Create(StructToMap(v))
+}
+
+// TypedSave updates the row by primary key using a struct value.
+// Fields tagged omitempty are skipped when zero (useful for partial updates).
+//
+//	err := Users.TypedSave(42, User{Name: "Bob"})
+func (m *TypedModel[T]) TypedSave(id any, v T) error {
+	return m.Model.Save(id, StructToMap(v))
+}
+
+// TypedInsert inserts a struct without returning the ID.
+func (m *TypedModel[T]) TypedInsert(v T) error {
+	return m.Model.Insert(StructToMap(v))
+}
+
+// TypedObservedCreate runs observer hooks then inserts the struct.
+func (m *TypedModel[T]) TypedObservedCreate(v T) (int64, error) {
+	return m.Model.ObservedCreate(StructToMap(v))
+}
+
+// TypedObservedSave runs observer hooks then updates the row by primary key.
+func (m *TypedModel[T]) TypedObservedSave(id any, v T) error {
+	return m.Model.ObservedSave(id, StructToMap(v))
+}
+
+// Scope applies a query scope function to this TypedModel's base query.
+//
+//	active := func(q *db.Query) *db.Query { return q.Where("active", "=", 1) }
+//	users, _ := Users.Scope(active).Get()
+func (m *TypedModel[T]) Scope(fn func(*Query) *Query) *TypedQuery[T] {
+	return &TypedQuery[T]{q: m.Model.Scope(fn)}
+}
+
+// Observe registers an observer on the underlying Model.
+func (m *TypedModel[T]) Observe(o Observer) {
+	m.Model.Observe(o)
+}
+
 // UpdateOrCreate finds the first row matching match and updates it, or creates it.
 func (m *TypedModel[T]) UpdateOrCreate(match, data map[string]any) (T, error) {
 	row, err := m.Model.UpdateOrCreate(match, data)

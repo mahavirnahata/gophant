@@ -400,6 +400,29 @@ func assignField(field reflect.Value, val string) {
 	}
 }
 
+// ── Flash ─────────────────────────────────────────────────────────────────────
+
+// Flash stores a value in the session that survives exactly one redirect.
+// It delegates to the session's Flash method; if no session is active it is a no-op.
+// Use c.To("/path").With("key", val).Send() for fluent flash+redirect chaining.
+func (c *Context) Flash(key string, val any) {
+	if s, ok := c.Values["_session"]; ok {
+		if sess, ok := s.(interface{ Flash(string, any) }); ok {
+			sess.Flash(key, val)
+		}
+	}
+}
+
+// OldInput retrieves a previously flashed form input value (repopulate forms after redirect).
+func (c *Context) OldInput(key string) string {
+	if old, ok := c.Values["flash__old_input"]; ok {
+		if m, ok := old.(map[string]string); ok {
+			return m[key]
+		}
+	}
+	return ""
+}
+
 // ── Response envelope helpers ─────────────────────────────────────────────────
 
 // Success sends a 200 JSON envelope: {"data": v}.
