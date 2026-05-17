@@ -9,10 +9,16 @@ import (
 	"mime/multipart"
 	"net/http"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
+	"time"
+
+	"github.com/mahavirnahata/gophant/validation"
 )
+
+var zeroTime = time.Time{}
 
 type Context struct {
 	Writer       http.ResponseWriter
@@ -392,4 +398,115 @@ func assignField(field reflect.Value, val string) {
 			field.SetFloat(n)
 		}
 	}
+}
+
+// ── Response envelope helpers ─────────────────────────────────────────────────
+
+// Success sends a 200 JSON envelope: {"data": v}.
+func (c *Context) Success(v any) {
+	c.JSON(http.StatusOK, map[string]any{"data": v})
+}
+
+// Created sends a 201 JSON envelope: {"data": v}.
+func (c *Context) Created(v any) {
+	c.JSON(http.StatusCreated, map[string]any{"data": v})
+}
+
+// Fail sends an error JSON envelope: {"error": message}.
+func (c *Context) Fail(code int, message string) {
+	c.JSON(code, map[string]string{"error": message})
+}
+
+// NoContent sends a 204 response with no body.
+func (c *Context) NoContent() {
+	c.Writer.WriteHeader(http.StatusNoContent)
+	c.Written = true
+}
+
+// Paginate sends a paginated JSON envelope:
+//
+//	{"data": items, "meta": {"total": t, "page": p, "per_page": pp, "pages": n}}
+func (c *Context) Paginate(items any, page, perPage, total int) {
+	pages := 0
+	if perPage > 0 {
+		pages = (total + perPage - 1) / perPage
+	}
+	c.JSON(http.StatusOK, map[string]any{
+		"data": items,
+		"meta": map[string]any{
+			"total":    total,
+			"page":     page,
+			"per_page": perPage,
+			"pages":    pages,
+		},
+	})
+}
+
+// ── Validation shortcut ───────────────────────────────────────────────────────
+
+// Validate runs validation rules against the request. If validation fails it
+// writes a 422 JSON response with the errors and returns false. On success it
+// returns the validated field map and true.
+//
+//	fields, ok := c.Validate(validation.Rules{
+//	    "email": {validation.Required(), validation.Email()},
+//	    "name":  {validation.Required(), validation.MinLength(2)},
+//	})
+//	if !ok { return }
+func (c *Context) Validate(rules validation.Rules) (map[string]string, bool) {
+	v := validation.New(c.Request)
+	for field, fieldRules := range rules {
+		v.Field(field, fieldRules...)
+	}
+	if v.Fails() {
+		c.JSON(http.StatusUnprocessableEntity, map[string]any{
+			"message": "validation failed",
+			"errors":  v.Errors(),
+		})
+		return nil, false
+	}
+	return v.Data(), true
+}
+
+// ── File responses ────────────────────────────────────────────────────────────
+
+// Download sends a file as an attachment (triggers browser download).
+// filename overrides the name shown in the Save-As dialog; pass "" to use the file's base name.
+func (c *Context) Download(path, filename string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	name := filename
+	if name == "" {
+		name = filepath.Base(path)
+	}
+	c.Writer.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, name))
+	c.Writer.Header().Set("Content-Type", "application/octet-stream")
+	http.ServeContent(c.Writer, c.Request, name, zeroTime, f)
+	c.Written = true
+	return nil
+}
+
+// Inline serves a file inline (e.g. PDFs, images rendered in the browser).
+// contentType defaults to application/octet-stream when empty.
+func (c *Context) Inline(path, contentType string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	ct := contentType
+	if ct == "" {
+		ct = "application/octet-stream"
+	}
+	name := filepath.Base(path)
+	c.Writer.Header().Set("Content-Type", ct)
+	c.Writer.Header().Set("Content-Disposition", fmt.Sprintf(`inline; filename="%s"`, name))
+	http.ServeContent(c.Writer, c.Request, name, zeroTime, f)
+	c.Written = true
+	return nil
 }

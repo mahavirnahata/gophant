@@ -16,6 +16,7 @@ type Model struct {
 	Timestamps   bool   // auto-set created_at / updated_at
 	SoftDelete   bool   // when true, Destroy sets deleted_at instead of deleting
 	DeletedAtCol string // soft-delete column (default: "deleted_at")
+	observers    []Observer
 }
 
 func NewModel(db *DB, table string) *Model {

@@ -15,6 +15,9 @@ import (
 type Rule func(string) string
 type RuleWith func(string, *Validator) string
 
+// Rules maps field names to their validation rules for use with c.Validate().
+type Rules map[string][]Rule
+
 type Validator struct {
 	errors   map[string][]string
 	data     map[string]string
@@ -113,6 +116,15 @@ func (v *Validator) First(field string) string {
 }
 
 // Value returns the validated value for a field.
+// Data returns all validated field values (the raw input map).
+func (v *Validator) Data() map[string]string {
+	out := make(map[string]string, len(v.data))
+	for k, val := range v.data {
+		out[k] = val
+	}
+	return out
+}
+
 func (v *Validator) Value(field string) string {
 	return v.data[field]
 }

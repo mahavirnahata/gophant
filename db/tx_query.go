@@ -37,8 +37,66 @@ func (q *TxQuery) Select(cols ...string) *TxQuery {
 	return q
 }
 
-func (q *TxQuery) Limit(n int) *TxQuery { q.limit = n; return q }
+func (q *TxQuery) Limit(n int) *TxQuery  { q.limit = n; return q }
 func (q *TxQuery) Offset(n int) *TxQuery { q.offset = n; return q }
+
+func (q *TxQuery) WhereNull(col string) *TxQuery {
+	q.wheres = append(q.wheres, condition{col: col, op: "IS NULL"})
+	return q
+}
+
+func (q *TxQuery) WhereNotNull(col string) *TxQuery {
+	q.wheres = append(q.wheres, condition{col: col, op: "IS NOT NULL"})
+	return q
+}
+
+func (q *TxQuery) WhereBetween(col string, min, max any) *TxQuery {
+	q.wheres = append(q.wheres, condition{col: col, op: "BETWEEN", val: [2]any{min, max}})
+	return q
+}
+
+func (q *TxQuery) WhereIn(col string, vals []any) *TxQuery {
+	q.wheres = append(q.wheres, condition{col: col, op: "IN", val: vals})
+	return q
+}
+
+func (q *TxQuery) OrderBy(order string) *TxQuery {
+	q.orderBy = order
+	return q
+}
+
+func (q *TxQuery) Latest(col ...string) *TxQuery {
+	c := "created_at"
+	if len(col) > 0 && col[0] != "" {
+		c = col[0]
+	}
+	q.orderBy = c + " DESC"
+	return q
+}
+
+func (q *TxQuery) Oldest(col ...string) *TxQuery {
+	c := "created_at"
+	if len(col) > 0 && col[0] != "" {
+		c = col[0]
+	}
+	q.orderBy = c + " ASC"
+	return q
+}
+
+func (q *TxQuery) Pluck(col string) ([]string, error) {
+	q.selectCols = []string{col}
+	rows, err := q.Get()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(rows))
+	for _, row := range rows {
+		if v, ok := row[col]; ok && v != nil {
+			out = append(out, fmt.Sprintf("%v", v))
+		}
+	}
+	return out, nil
+}
 
 func (q *TxQuery) OrderBySafe(column, direction string, allowed []string) *TxQuery {
 	if !isAllowed(column, allowed) {
@@ -142,24 +200,34 @@ func (q *TxQuery) buildWhere(startIdx int) (string, []any) {
 				sb.WriteString(" AND ")
 			}
 		}
-		if w.op == "IN" {
+		switch w.op {
+		case "IS NULL", "IS NOT NULL":
+			sb.WriteString(fmt.Sprintf("%s %s", w.col, w.op))
+		case "BETWEEN":
+			pair := w.val.([2]any)
+			p1 := q.db.Dialect.Placeholder(idx)
+			p2 := q.db.Dialect.Placeholder(idx + 1)
+			sb.WriteString(fmt.Sprintf("%s BETWEEN %s AND %s", w.col, p1, p2))
+			args = append(args, pair[0], pair[1])
+			idx += 2
+		case "IN":
 			list, ok := w.val.([]any)
 			if !ok || len(list) == 0 {
 				sb.WriteString("1=0")
-				continue
+			} else {
+				placeholders := make([]string, len(list))
+				for i := range list {
+					placeholders[i] = q.db.Dialect.Placeholder(idx)
+					idx++
+				}
+				sb.WriteString(fmt.Sprintf("%s IN (%s)", w.col, strings.Join(placeholders, ",")))
+				args = append(args, list...)
 			}
-			placeholders := make([]string, len(list))
-			for i := range list {
-				placeholders[i] = q.db.Dialect.Placeholder(idx)
-				idx++
-			}
-			sb.WriteString(fmt.Sprintf("%s IN (%s)", w.col, strings.Join(placeholders, ",")))
-			args = append(args, list...)
-			continue
+		default:
+			sb.WriteString(fmt.Sprintf("%s %s %s", w.col, w.op, q.db.Dialect.Placeholder(idx)))
+			args = append(args, w.val)
+			idx++
 		}
-		sb.WriteString(fmt.Sprintf("%s %s %s", w.col, w.op, q.db.Dialect.Placeholder(idx)))
-		args = append(args, w.val)
-		idx++
 	}
 	return sb.String(), args
 }
